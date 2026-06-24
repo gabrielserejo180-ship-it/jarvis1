@@ -462,7 +462,7 @@ async function sendToJarvis(text){
       body:JSON.stringify({
         model:'claude-sonnet-4-6',max_tokens:1000,
         system:buildPrompt(),messages:history,
-        tools:[{type:'web_search_20250305',name:'web_search'}]
+        // web search via Gemini grounding (ativado no Worker)
       })
     });
     const data=await res.json();
