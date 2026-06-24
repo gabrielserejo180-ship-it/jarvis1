@@ -332,6 +332,8 @@ function animWave(){
 // ── ESTADO ─────────────────────────────────────────────
 let memory=[],history=[],isThinking=false,t0=Date.now();
 const SHEETS_URL='https://script.google.com/macros/s/AKfycbxay_TgKBRmVO2hnSHquZk9tpUd0IVv9elSUY_NbE0yAnQSZBivGwtdWMCn8x0c8NkdVA/exec';
+// ⚠️ Após criar o Cloudflare Worker, substitua a URL abaixo
+const WORKER_URL='https://jarvis-proxy.gabriel-serejo290.workers.dev';
 let sheetsURL=localStorage.getItem('jarvis_url')||SHEETS_URL;
 document.getElementById('surl').value=sheetsURL;
 
@@ -454,9 +456,9 @@ async function sendToJarvis(text){
   addTyping();
 
   try{
-    const res=await fetch('https://api.anthropic.com/v1/messages',{
+    const res=await fetch(WORKER_URL,{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{'Content-Type':'application/json'}, // API key gerenciada pelo Worker
       body:JSON.stringify({
         model:'claude-sonnet-4-6',max_tokens:1000,
         system:buildPrompt(),messages:history,
