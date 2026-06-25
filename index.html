@@ -764,93 +764,110 @@ async function sendToJarvis(text){
 }
 
 // ══════════════════════════════════════════
-//  TTS — frase a frase, sem travar
+//  TTS — robusto para Android Chrome
 // ══════════════════════════════════════════
-// Keep-alive do speechSynthesis no Android (evita pausa automática a cada 15s)
-let ttsKeepAlive=null;
-function startTTSKeepAlive(){
-  clearInterval(ttsKeepAlive);
-  ttsKeepAlive=setInterval(()=>{
-    if(window.speechSynthesis.speaking){
-      window.speechSynthesis.pause();
-      window.speechSynthesis.resume();
-    } else {
-      clearInterval(ttsKeepAlive);
-    }
-  },8000);
+let ttsWatchdog=null;
+let ttsCurrentText='';
+let ttsOnDoneCallback=null;
+
+function getVoice(){
+  const vs=window.speechSynthesis.getVoices();
+  return vs.find(v=>v.lang==='pt-BR'&&/daniel|ricardo|antonio|masc|male/i.test(v.name))
+        ||vs.find(v=>v.lang==='pt-BR'&&!/female|luciana|vitoria/i.test(v.name))
+        ||vs.find(v=>v.lang==='pt-BR')
+        ||vs.find(v=>v.lang.startsWith('pt'))
+        ||null;
+}
+
+function spokenDone(){
+  clearInterval(ttsWatchdog);
+  setOrbMode('idle');
+  isThinking=false;
+  if(listenMode==='dictate') setTimeout(()=>startListening(),700);
+  else if(continuousMode)    setTimeout(()=>startListening(),600);
 }
 
 function speak(text){
-  if(!window.speechSynthesis)return;
+  if(!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
-  clearInterval(ttsKeepAlive);
+  clearInterval(ttsWatchdog);
 
   const clean=text
     .replace(/[*_#`]/g,'')
     .replace(/[\u{1F000}-\u{1FFFF}]/gu,'')
     .replace(/LEARNED_JSON:\[.*?\]/gs,'')
+    .replace(/\n+/g,' ')
     .trim();
 
-  if(!clean) { onDone(); return; }
+  if(!clean){ spokenDone(); return; }
 
-  // Divide em frases — ponto, exclamação, interrogação, ou vírgula longa
-  const sentences=clean.match(/[^.!?]+[.!?]+/g)||[clean];
-  let idx=0;
-  let done=false;
-
+  ttsCurrentText=clean;
   setOrbMode('speaking');
   animateSpeakWave();
-  startTTSKeepAlive();
 
-  function speakSentence(){
-    if(done) return;
-    if(idx>=sentences.length){ onDone(); return; }
-
-    const sentence=sentences[idx].trim();
-    idx++; // incrementa ANTES de criar a utterance — sem duplo
-
-    if(!sentence){ speakSentence(); return; }
-
-    const u=new SpeechSynthesisUtterance(sentence);
+  function doSpeak(txt){
+    window.speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(txt);
     u.lang='pt-BR';
-    u.rate=1.08;
+    u.rate=1.05;
     u.pitch=0.82;
     u.volume=1;
 
-    const vs=window.speechSynthesis.getVoices();
-    const v=vs.find(v=>v.lang==='pt-BR'&&/daniel|ricardo|antonio|masc|male/i.test(v.name))
-            ||vs.find(v=>v.lang==='pt-BR'&&!/female|luciana|vitoria/i.test(v.name))
-            ||vs.find(v=>v.lang==='pt-BR')
-            ||vs.find(v=>v.lang.startsWith('pt'));
+    // Aguarda vozes carregarem (necessário no Android)
+    const v=getVoice();
     if(v) u.voice=v;
 
-    u.onend=()=>{ speakSentence(); };
-    u.onerror=()=>{ speakSentence(); }; // pula frase com erro, não trava
+    let finished=false;
+
+    u.onend=()=>{
+      if(finished) return;
+      finished=true;
+      clearInterval(ttsWatchdog);
+      spokenDone();
+    };
+
+    u.onerror=(e)=>{
+      if(finished) return;
+      // Ignora erros de cancelamento — são esperados
+      if(e.error==='canceled'||e.error==='interrupted') return;
+      finished=true;
+      clearInterval(ttsWatchdog);
+      spokenDone();
+    };
 
     window.speechSynthesis.speak(u);
+
+    // Watchdog: Android às vezes para sem disparar onend
+    // Checa a cada 500ms se ainda está falando
+    let lastPos=0;
+    let stuckCount=0;
+    clearInterval(ttsWatchdog);
+    ttsWatchdog=setInterval(()=>{
+      if(finished) { clearInterval(ttsWatchdog); return; }
+      if(!window.speechSynthesis.speaking && !window.speechSynthesis.pending){
+        stuckCount++;
+        if(stuckCount>=3){
+          // Parou sem disparar onend — força conclusão
+          clearInterval(ttsWatchdog);
+          finished=true;
+          spokenDone();
+        }
+      } else {
+        stuckCount=0;
+        // Keep-alive: Android cancela após ~15s de inatividade de tela
+        // Resume suave para manter ativo
+        if(window.speechSynthesis.paused){
+          window.speechSynthesis.resume();
+        }
+      }
+    },500);
   }
 
-  function onDone(){
-    if(done) return;
-    done=true;
-    clearInterval(ttsKeepAlive);
-    setOrbMode('idle');
-    isThinking=false; // ── BUG FIX: garante reset aqui também
-    // Modo ditado: volta a gravar
-    if(listenMode==='dictate'){
-      setTimeout(()=>startListening(),700);
-    }
-    // Modo contínuo
-    else if(continuousMode){
-      setTimeout(()=>startListening(),600);
-    }
-  }
-
-  // Aguarda vozes se necessário
+  // Se vozes ainda não carregaram, aguarda
   if(window.speechSynthesis.getVoices().length===0){
-    window.speechSynthesis.onvoiceschanged=()=>speakSentence();
+    window.speechSynthesis.onvoiceschanged=()=>doSpeak(clean);
   } else {
-    speakSentence();
+    doSpeak(clean);
   }
 }
 
