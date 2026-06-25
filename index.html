@@ -726,24 +726,57 @@ async function sendToJarvis(text){
   const _textFinal = _precisaData ? `[${_dh}] ${text}` : text;
   history.push({role:'user',content:_textFinal});
 
+  // Monta contexto com data/hora
+  const agora2=new Date();
+  const ds=['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+  const ms=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+  const dataAgora=`${ds[agora2.getDay()]}, ${agora2.getDate()} de ${ms[agora2.getMonth()]} de ${agora2.getFullYear()} — ${String(agora2.getHours()).padStart(2,'0')}:${String(agora2.getMinutes()).padStart(2,'0')}`;
+  const contextMsg={role:'user',content:`[SISTEMA]: Data e hora: ${dataAgora}`};
+  const contextReply={role:'assistant',content:`Registrado: ${dataAgora}.`};
+  const messagesWithCtx=[contextMsg, contextReply, ...history];
+
+  // Tenta até 2 vezes em caso de falha
+  let raw='';
+  let tentativa=0;
+  while(tentativa<2 && !raw){
+    tentativa++;
+    try{
+      const res=await fetch(WORKER_URL,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({system:buildPrompt(),messages:messagesWithCtx}),
+        signal: AbortSignal.timeout(25000) // timeout de 25s
+      });
+
+      if(!res.ok){
+        console.warn(`Worker HTTP ${res.status} — tentativa ${tentativa}`);
+        if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
+        continue;
+      }
+
+      const data=await res.json();
+      raw=(data.content||[]).map(b=>b.text||'').join('').trim();
+
+      if(!raw){
+        console.warn('Resposta vazia — tentativa '+tentativa);
+        if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
+      }
+
+    }catch(err){
+      console.warn('Fetch erro tentativa '+tentativa+':', err.message);
+      if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
+    }
+  }
+
+  if(!raw){
+    isThinking=false;
+    setOrbMode('idle');
+    if(listenMode==='dictate'||continuousMode) setTimeout(startListening,800);
+    speak('Não consegui conexão com os sistemas, senhor. Tente novamente.');
+    return;
+  }
+
   try{
-    // Injeta data/hora como lembrete no início do histórico
-    const agora2=new Date();
-    const ds=['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
-    const ms=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
-    const dataAgora=`${ds[agora2.getDay()]}, ${agora2.getDate()} de ${ms[agora2.getMonth()]} de ${agora2.getFullYear()} — ${String(agora2.getHours()).padStart(2,'0')}:${String(agora2.getMinutes()).padStart(2,'0')}`;
-    const contextMsg={role:'user',content:`[CONTEXTO DO SISTEMA — NÃO RESPONDA ISTO]: Data e hora atual: ${dataAgora}`};
-    const contextReply={role:'assistant',content:`Entendido. Data e hora registradas: ${dataAgora}.`};
-    const messagesWithCtx=[contextMsg, contextReply, ...history];
-
-    const res=await fetch(WORKER_URL,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({system:buildPrompt(),messages:messagesWithCtx})
-    });
-    const data=await res.json();
-    const raw=(data.content||[]).map(b=>b.text||'').join('');
-
     const lm=raw.match(/LEARNED_JSON:(\[.*?\])/s);
     let clean=raw.replace(/LEARNED_JSON:\[.*?\]/s,'').trim();
 
@@ -760,26 +793,29 @@ async function sendToJarvis(text){
       }catch(e){}
     }
 
+    if(!clean){
+      clean='Certamente, senhor. Como posso ajudá-lo?';
+    }
+
     history.push({role:'assistant',content:clean});
 
-    // Verifica se tem comando de dispositivo na resposta
-    const cmdResult = await detectarComandoDispositivo(clean);
+    // Verifica comandos de dispositivo
+    const cmdResult=await detectarComandoDispositivo(clean);
     if(cmdResult){
-      // Remove o comando do texto e adiciona o resultado
-      const cleanFinal = clean.replace(/\[cmd:[^\]]+\]/gi, '').trim();
-      speak(cleanFinal || cmdResult);
+      const cleanFinal=clean.replace(/\[cmd:[^\]]+\]/gi,'').trim();
+      speak(cleanFinal||cmdResult);
     } else {
       speak(clean);
     }
 
   }catch(err){
+    console.warn('Erro processando resposta:', err);
     isThinking=false;
     setOrbMode('idle');
-    // Em caso de erro, reinicia escuta se estava em modo ativo
     if(listenMode==='dictate'||continuousMode) setTimeout(startListening,800);
-    speak('Sistemas temporariamente offline, senhor.');
+    speak('Erro ao processar resposta, senhor.');
   }
-  // NÃO reseta isThinking aqui — speak→onDone cuida disso
+  // isThinking é resetado pelo speak→spokenDone
 }
 
 // ══════════════════════════════════════════
