@@ -791,6 +791,7 @@ function spokenDone(){
   ttsBusy=false;
   isThinking=false;
   clearTimeout(ttsTimer);
+  try{ window.speechSynthesis.cancel(); }catch(e){}
   setOrbMode('idle');
   // Reinicia escuta nos modos ativos
   if(listenMode==='dictate'){
@@ -814,6 +815,9 @@ function speak(text){
   window.speechSynthesis.cancel();
   ttsBusy=true;
 
+  // Safety: reseta ttsBusy após 25s no máximo
+  const _safety=setTimeout(()=>{ if(ttsBusy) spokenDone(); }, 25000);
+
   const clean=text
     .replace(/[*_#`]/g,'')
     .replace(/[\u{1F000}-\u{1FFFF}]/gu,'')
@@ -821,7 +825,7 @@ function speak(text){
     .replace(/\n+/g,' ')
     .trim();
 
-  if(!clean){ spokenDone(); return; }
+  if(!clean){ clearTimeout(_safety); spokenDone(); return; }
 
   // Divide em frases curtas
   const sentences=(clean.match(/[^.!?,;]+[.!?,;]+/g)||[clean])
@@ -1007,7 +1011,12 @@ function stopListening(){
 }
 
 function toggleVoice(){
-  // Para fala se estiver falando
+  // Se ttsBusy mas não está realmente falando, reseta
+  if(ttsBusy && !window.speechSynthesis.speaking && !window.speechSynthesis.pending){
+    ttsBusy=false;
+    setOrbMode('idle');
+  }
+  // Para fala se estiver falando de verdade
   if(ttsBusy){
     ttsBusy=false;
     clearTimeout(ttsTimer);
@@ -1159,30 +1168,34 @@ setOrbMode=function(mode){
   const iw=document.getElementById('imm-orbwrap');
   const ii=document.getElementById('imm-icon');
   const is=document.getElementById('imm-status');
-  if(!iw)return;
-  iw.className='immersive-orb-wrap '+mode;
-  immTarget=orbTarget;
+  // Espelha no imersivo apenas se estiver visível
+  if(iw){
+    iw.className='immersive-orb-wrap '+mode;
+    immTarget=orbTarget;
+  }
 
-  if(mode==='idle'){
-    immTarget=0;
-    ii.textContent='◈';
-    is.className='immersive-status';
-    is.textContent=continuousMode?'MODO CONTÍNUO ATIVO':listenMode==='dictate'?'● DITANDO — FALE À VONTADE':'AGUARDANDO';
-  } else if(mode==='listening'){
-    immTarget=22;
-    ii.textContent='🎤';
-    is.className='immersive-status listening';
-    is.textContent=listenMode==='dictate'?'● DITANDO — FALE À VONTADE':'OUVINDO...';
-  } else if(mode==='speaking'){
-    immTarget=32;
-    ii.textContent='◈';
-    is.className='immersive-status speaking';
-    is.textContent='PROCESSANDO VOZ...';
-  } else if(mode==='thinking'){
-    immTarget=10;
-    ii.textContent='⟳';
-    is.className='immersive-status thinking';
-    is.textContent='ANALISANDO...';
+  if(ii && is){
+    if(mode==='idle'){
+      immTarget=0;
+      ii.textContent='◈';
+      is.className='immersive-status';
+      is.textContent=continuousMode?'MODO CONTÍNUO ATIVO':listenMode==='dictate'?'● DITANDO — FALE À VONTADE':'AGUARDANDO';
+    } else if(mode==='listening'){
+      immTarget=22;
+      ii.textContent='🎤';
+      is.className='immersive-status listening';
+      is.textContent=listenMode==='dictate'?'● DITANDO — FALE À VONTADE':'OUVINDO...';
+    } else if(mode==='speaking'){
+      immTarget=32;
+      ii.textContent='◈';
+      is.className='immersive-status speaking';
+      is.textContent='PROCESSANDO VOZ...';
+    } else if(mode==='thinking'){
+      immTarget=10;
+      ii.textContent='⟳';
+      is.className='immersive-status thinking';
+      is.textContent='ANALISANDO...';
+    }
   }
 };
 
