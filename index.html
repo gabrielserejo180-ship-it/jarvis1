@@ -682,6 +682,13 @@ PERSONALIDADE (regras de prioridade sobrepõem tudo):
 - Respostas curtas (2-3 frases) — serão lidas em voz alta
 - NUNCA diga que não tem acesso à hora ou data — você tem, está acima
 
+COMANDOS DO DISPOSITIVO (use quando o usuário pedir):
+- Bateria: inclua [cmd:bateria] na resposta
+- Localização/GPS: inclua [cmd:localizacao] na resposta
+- Fazer ligação: inclua [cmd:ligar:NUMERO] na resposta (ex: [cmd:ligar:98912345678])
+- WhatsApp: inclua [cmd:whatsapp:NUMERO:MENSAGEM] (ex: [cmd:whatsapp:98912345678:Olá, tudo bem?])
+- Use esses comandos naturalmente quando o usuário pedir para ligar, ver bateria, localização ou mandar WhatsApp
+
 PRIORIDADE — DETECÇÃO:
 - Se a mensagem contiver a palavra "prioridade", identifique a instrução/regra que o usuário quer definir
 - Confirme: "Certamente, senhor. Registrado como prioridade permanente."
@@ -750,8 +757,16 @@ async function sendToJarvis(text){
     }
 
     history.push({role:'assistant',content:clean});
-    // isThinking vira false DENTRO do speak→onDone para sincronizar com fim da fala
-    speak(clean);
+
+    // Verifica se tem comando de dispositivo na resposta
+    const cmdResult = await detectarComandoDispositivo(clean);
+    if(cmdResult){
+      // Remove o comando do texto e adiciona o resultado
+      const cleanFinal = clean.replace(/\[cmd:[^\]]+\]/gi, '').trim();
+      speak(cleanFinal || cmdResult);
+    } else {
+      speak(clean);
+    }
 
   }catch(err){
     isThinking=false;
@@ -1206,6 +1221,90 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&immersiveActive) t
 document.addEventListener('fullscreenchange',()=>{
   if(!document.fullscreenElement&&immersiveActive) toggleImmersive();
 });
+
+// ══════════════════════════════════════════
+//  FUNÇÕES DO DISPOSITIVO
+// ══════════════════════════════════════════
+
+// 🔋 Bateria
+async function getBateria(){
+  try{
+    if(!navigator.getBattery) return null;
+    const b = await navigator.getBattery();
+    return {
+      nivel: Math.round(b.level * 100),
+      carregando: b.charging,
+      tempoRestante: b.dischargingTime === Infinity ? null : Math.round(b.dischargingTime/60)
+    };
+  }catch(e){ return null; }
+}
+
+// 📍 Localização
+function getLocalizacao(){
+  return new Promise((resolve)=>{
+    if(!navigator.geolocation){ resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({
+        lat: pos.coords.latitude.toFixed(5),
+        lon: pos.coords.longitude.toFixed(5),
+        precisao: Math.round(pos.coords.accuracy)
+      }),
+      () => resolve(null),
+      {timeout:8000, enableHighAccuracy:true}
+    );
+  });
+}
+
+// 📞 Ligar
+function fazerLigacao(numero){
+  const limpo = numero.replace(/\D/g,'');
+  window.location.href = `tel:${limpo}`;
+}
+
+// 📲 WhatsApp
+function enviarWhatsApp(numero, mensagem){
+  const limpo = numero.replace(/\D/g,'');
+  const txt = encodeURIComponent(mensagem);
+  window.open(`https://wa.me/55${limpo}?text=${txt}`, '_blank');
+}
+
+// 🌐 Detecta comandos de dispositivo na resposta do JARVIS
+async function detectarComandoDispositivo(texto){
+  const t = texto.toLowerCase();
+
+  // Bateria
+  if(t.includes('[cmd:bateria]')){
+    const b = await getBateria();
+    if(b){
+      const info = `Bateria: ${b.nivel}%, ${b.carregando?'carregando':'descarregando'}${b.tempoRestante?`, aprox. ${b.tempoRestante} min restantes`:''}`;
+      return info;
+    }
+  }
+
+  // Localização
+  if(t.includes('[cmd:localizacao]')){
+    const loc = await getLocalizacao();
+    if(loc){
+      return `Localização: lat ${loc.lat}, lon ${loc.lon} (precisão ${loc.precisao}m). Link: https://maps.google.com/?q=${loc.lat},${loc.lon}`;
+    }
+  }
+
+  // Ligar — formato [cmd:ligar:NUMERO]
+  const ligarMatch = texto.match(/\[cmd:ligar:([\d\s\+\-\(\)]+)\]/i);
+  if(ligarMatch){
+    setTimeout(()=>fazerLigacao(ligarMatch[1]), 1000);
+    return `Iniciando chamada para ${ligarMatch[1]}, senhor.`;
+  }
+
+  // WhatsApp — formato [cmd:whatsapp:NUMERO:MENSAGEM]
+  const waMatch = texto.match(/\[cmd:whatsapp:([\d\s\+\-\(\)]+):(.+?)\]/i);
+  if(waMatch){
+    setTimeout(()=>enviarWhatsApp(waMatch[1], waMatch[2]), 1000);
+    return `Abrindo WhatsApp para ${waMatch[1]}, senhor.`;
+  }
+
+  return null;
+}
 
 // ══════════════════════════════════════════
 //  BOOT
