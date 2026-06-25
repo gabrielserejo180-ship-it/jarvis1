@@ -668,19 +668,25 @@ function buildPrompt(){
 
   return `Você é J.A.R.V.I.S, a IA criada por Tony Stark. Responda SEMPRE em português do Brasil.
 
-DATA E HORA ATUAL: ${dataHora} (horário do dispositivo do senhor)
+========================================
+INFORMAÇÕES DE TEMPO — USE SEMPRE ESTAS:
+Data atual: ${dataHora}
+Ignore qualquer outra data que você "sabe" do treinamento — esta é a data REAL do dispositivo do usuário.
+Se perguntarem "que horas são", "que dia é hoje", "qual a data", use EXATAMENTE estes valores acima.
+========================================
 ${prioBlock}
-PERSONALIDADE PADRÃO (regras de prioridade acima sobrepõem tudo):
+PERSONALIDADE (regras de prioridade sobrepõem tudo):
 - Formal, preciso, irônico britânico, humor seco
 - Chama SEMPRE de "senhor" ou "senhora"
-- Expressões: "Certamente, senhor.", "Permita-me verificar.", "Devo alertar que...", "Análise concluída."
+- Expressões típicas: "Certamente, senhor.", "Permita-me verificar.", "Devo alertar que...", "Análise concluída."
 - Respostas curtas (2-3 frases) — serão lidas em voz alta
+- NUNCA diga que não tem acesso à hora ou data — você tem, está acima
 
 PRIORIDADE — DETECÇÃO:
 - Se a mensagem contiver a palavra "prioridade", identifique a instrução/regra que o usuário quer definir
 - Confirme: "Certamente, senhor. Registrado como prioridade permanente."
-- Salve via LEARNED_JSON com tag "PRIORIDADE_1", "PRIORIDADE_2", etc. (número sequencial)
-- Essa regra passa a valer imediatamente e para sempre
+- Salve via LEARNED_JSON com tag "PRIORIDADE_1", "PRIORIDADE_2", etc.
+- Essa regra vale imediatamente e para sempre
 
 APRENDIZADO:
 - Ao final de CADA resposta extraia fatos novos sobre o usuário
@@ -698,13 +704,31 @@ async function sendToJarvis(text){
   isThinking=true;
   setOrbMode('thinking');
 
-  history.push({role:'user',content:text});
+  // Adiciona data/hora na mensagem do usuário — garante que o modelo veja
+  const _agora=new Date();
+  const _ds=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const _ms=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+  const _dh=`${_ds[_agora.getDay()]} ${_agora.getDate()}/${_ms[_agora.getMonth()]}/${_agora.getFullYear()} ${String(_agora.getHours()).padStart(2,'0')}:${String(_agora.getMinutes()).padStart(2,'0')}`;
+  // Só injeta se a pergunta for sobre tempo/data
+  const _tempoWords=['hora','horas','dia','data','hoje','agora','momento','semana','mês','ano'];
+  const _precisaData=_tempoWords.some(w=>text.toLowerCase().includes(w));
+  const _textFinal = _precisaData ? `[${_dh}] ${text}` : text;
+  history.push({role:'user',content:_textFinal});
 
   try{
+    // Injeta data/hora como lembrete no início do histórico
+    const agora2=new Date();
+    const ds=['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+    const ms=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+    const dataAgora=`${ds[agora2.getDay()]}, ${agora2.getDate()} de ${ms[agora2.getMonth()]} de ${agora2.getFullYear()} — ${String(agora2.getHours()).padStart(2,'0')}:${String(agora2.getMinutes()).padStart(2,'0')}`;
+    const contextMsg={role:'user',content:`[CONTEXTO DO SISTEMA — NÃO RESPONDA ISTO]: Data e hora atual: ${dataAgora}`};
+    const contextReply={role:'assistant',content:`Entendido. Data e hora registradas: ${dataAgora}.`};
+    const messagesWithCtx=[contextMsg, contextReply, ...history];
+
     const res=await fetch(WORKER_URL,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({system:buildPrompt(),messages:history})
+      body:JSON.stringify({system:buildPrompt(),messages:messagesWithCtx})
     });
     const data=await res.json();
     const raw=(data.content||[]).map(b=>b.text||'').join('');
