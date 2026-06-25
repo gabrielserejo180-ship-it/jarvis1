@@ -680,6 +680,7 @@ PERSONALIDADE (regras de prioridade sobrepõem tudo):
 - Chama SEMPRE de "senhor" ou "senhora"
 - Expressões típicas: "Certamente, senhor.", "Permita-me verificar.", "Devo alertar que...", "Análise concluída."
 - Respostas curtas (2-3 frases) — serão lidas em voz alta
+- Ao se referir a si mesmo na fala, use JARVIS (sem pontos) — nunca J.A.R.V.I.S
 - NUNCA diga que não tem acesso à hora ou data — você tem, está acima
 
 COMANDOS DO DISPOSITIVO (use quando o usuário pedir):
@@ -816,6 +817,7 @@ function speak(text){
   ttsBusy=true;
 
   const clean=text
+    .replace(/J\.A\.R\.V\.I\.S/gi,'JARVIS')  // evita soletração
     .replace(/[*_#`]/g,'')
     .replace(/[\u{1F000}-\u{1FFFF}]/gu,'')
     .replace(/LEARNED_JSON:\[.*?\]/gs,'')
@@ -825,15 +827,15 @@ function speak(text){
   if(!clean){ spokenDone(); return; }
 
   // Divide em frases curtas (máx 80 chars cada)
-  const raw = clean.match(/[^.!?,;]+[.!?,;]*/g) || [clean];
+  const raw = clean.match(/[^.!?]+[.!?]*/g) || [clean]; // divide só em pontuação forte
   const sentences = [];
   raw.forEach(s=>{
     s = s.trim();
     if(!s) return;
     // Se frase ainda for longa, divide por espaço a cada 80 chars
-    while(s.length > 80){
-      const cut = s.lastIndexOf(' ', 80);
-      if(cut < 20){ sentences.push(s.slice(0,80)); s=s.slice(80).trim(); }
+    while(s.length > 150){
+      const cut = s.lastIndexOf(' ', 150);
+      if(cut < 20){ sentences.push(s.slice(0,150)); s=s.slice(150).trim(); }
       else { sentences.push(s.slice(0,cut)); s=s.slice(cut).trim(); }
     }
     if(s) sentences.push(s);
@@ -869,14 +871,14 @@ function speak(text){
     if(v) u.voice=v;
 
     // Duração estimada: ~65ms por char
-    const delay = Math.max(1200, sentence.length * 65);
+    const delay = Math.max(2500, sentence.length * 120);
 
     let advanced = false;
     function advance(){
       if(advanced) return;
       advanced = true;
       clearTimeout(ttsTimer);
-      ttsTimer = setTimeout(sayNext, 120); // pausa entre frases
+      ttsTimer = setTimeout(sayNext, 300); // pausa entre frases
     }
 
     u.onend = advance;
@@ -893,7 +895,7 @@ function speak(text){
         // Força resume se pausou
         if(window.speechSynthesis.paused) window.speechSynthesis.resume();
         // Aguarda mais um pouco antes de avançar
-        setTimeout(advance, 400);
+        setTimeout(advance, 800);
       }
     }, delay);
   }
