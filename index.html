@@ -707,8 +707,11 @@ ${memBlock}`;
 //  API
 // ══════════════════════════════════════════
 async function sendToJarvis(text){
-  if(!text||isThinking)return;
+  text=(text||'').trim();
+  if(!text) return;
+  if(isThinking) return; // já processando
   isThinking=true;
+  ttsBusy=false; // garante reset
   setOrbMode('thinking');
 
   // Adiciona data/hora na mensagem do usuário — garante que o modelo veja
@@ -786,12 +789,15 @@ let ttsTimer=null;
 
 function spokenDone(){
   ttsBusy=false;
-  clearTimeout(ttsTimer);
-  window.speechSynthesis.cancel();
-  setOrbMode('idle');
   isThinking=false;
-  if(listenMode==='dictate') setTimeout(()=>startListening(),700);
-  else if(continuousMode)    setTimeout(()=>startListening(),600);
+  clearTimeout(ttsTimer);
+  setOrbMode('idle');
+  // Reinicia escuta nos modos ativos
+  if(listenMode==='dictate'){
+    setTimeout(startListening, 800);
+  } else if(continuousMode){
+    setTimeout(startListening, 600);
+  }
 }
 
 function getVoice(){
@@ -880,19 +886,16 @@ function speak(text){
 }
 
 // ══════════════════════════════════════════
-//  STT
+//  STT — fluxo simplificado e robusto
 // ══════════════════════════════════════════
-let rec=null,listening=false;
+let rec=null, listening=false, listenMode='normal';
 
-// Palavras-chave que disparam a resposta no modo ditado
-const TRIGGER_WORDS = ['pode falar','jarvis responde','pode responder','responde jarvis','tá pode falar','ok pode falar','agora pode falar'];
-
-// listenMode: 'normal' = silêncio 2.5s envia | 'dictate' = só envia ao ouvir trigger
-let listenMode = 'normal';
+const TRIGGER_WORDS=['pode falar','jarvis responde','pode responder','responde jarvis','ok jarvis'];
 
 function buildRec(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR)return null;
+  if(!SR){ speak('Reconhecimento de voz não disponível, senhor.'); return null; }
+
   const r=new SR();
   r.lang='pt-BR';
   r.continuous=true;
@@ -901,121 +904,124 @@ function buildRec(){
 
   let silenceTimer=null;
   let accumulated='';
+  let sent=false; // evita envio duplo
 
-  function sendAccumulated(){
-    clearTimeout(silenceTimer);
+  function doSend(){
+    if(sent) return;
     const txt=accumulated.trim();
+    if(!txt) return;
+    sent=true;
     accumulated='';
-    if(txt){ r.stop(); sendToJarvis(txt); }
-  }
-
-  function resetSilence(){
-    if(listenMode==='dictate') return; // no modo ditado ignora silêncio
     clearTimeout(silenceTimer);
-    silenceTimer=setTimeout(()=>{
-      if(accumulated.trim()) sendAccumulated();
-    }, 2500);
-  }
-
-  function checkTrigger(text){
-    if(listenMode!=='dictate') return false;
-    const lower=text.toLowerCase().trim();
-    return TRIGGER_WORDS.some(t=>lower.includes(t));
+    try{ r.stop(); }catch(e){}
+    sendToJarvis(txt);
   }
 
   r.onstart=()=>{
     listening=true;
     accumulated='';
+    sent=false;
     setOrbMode('listening');
     if(listenMode==='dictate'){
       const js=document.getElementById('jstatus');
-      const is=document.getElementById('imm-status');
-      const msg='● DITANDO — diga "pode falar" para responder';
-      if(js){ js.textContent=msg; js.style.color='#ffcc00'; }
-      if(is){ is.textContent=msg; is.style.color='#ffcc00'; }
+      if(js){ js.textContent='● DITANDO — diga "pode falar"'; js.style.color='#ffcc00'; }
     }
   };
 
   r.onresult=e=>{
+    if(sent) return;
     let interim='', fin='';
     for(let i=e.resultIndex;i<e.results.length;i++){
-      if(e.results[i].isFinal) fin += e.results[i][0].transcript + ' ';
-      else interim += e.results[i][0].transcript;
+      if(e.results[i].isFinal) fin+=e.results[i][0].transcript+' ';
+      else interim+=e.results[i][0].transcript;
     }
 
     if(fin){
-      // Verifica trigger ANTES de acumular
-      if(checkTrigger(fin)){
-        // Remove a trigger word do texto final
-        let clean=fin.toLowerCase();
-        TRIGGER_WORDS.forEach(t=>{ clean=clean.replace(t,''); });
-        accumulated += clean;
-        sendAccumulated();
-        return;
+      accumulated+=fin;
+      // Modo ditado: só envia no trigger
+      if(listenMode==='dictate'){
+        const lower=accumulated.toLowerCase();
+        if(TRIGGER_WORDS.some(t=>lower.includes(t))){
+          TRIGGER_WORDS.forEach(t=>{ accumulated=accumulated.replace(new RegExp(t,'gi'),''); });
+          doSend();
+        }
+      } else {
+        // Modo normal: timer de silêncio de 2s
+        clearTimeout(silenceTimer);
+        silenceTimer=setTimeout(doSend, 2000);
       }
-      accumulated += fin;
-      resetSilence();
     }
 
-    if(interim){
-      // Verifica trigger no interim também
-      if(checkTrigger(interim)){
-        sendAccumulated();
-        return;
-      }
-      const preview=(accumulated+interim).slice(-40).toUpperCase();
-      document.getElementById('jstatus').textContent=preview+'...';
-      orbTarget=12+Math.random()*16;
-      if(listenMode==='normal') resetSilence();
+    if(interim && !sent){
+      const preview=(accumulated+interim).slice(-35).toUpperCase();
+      const js=document.getElementById('jstatus');
+      if(js && listenMode!=='dictate') js.textContent=preview+'...';
+      orbTarget=12+Math.random()*14;
     }
   };
 
   r.onerror=e=>{
     clearTimeout(silenceTimer);
-    listening=false; setOrbMode('idle');
-    if(e.error==='not-allowed') speak('Acesso ao microfone negado, senhor.');
-    else if(e.error==='no-speech'){
-      if(listenMode==='dictate') setTimeout(startListening,300); // no ditado reinicia sempre
-      else if(continuousMode) setTimeout(startListening,800);
+    listening=false;
+    if(e.error==='not-allowed'){
+      speak('Microfone negado, senhor. Verifique as permissões.');
+    } else if(e.error==='no-speech'){
+      // Reinicia automaticamente nos modos ativos
+      if(listenMode==='dictate'||continuousMode) setTimeout(startListening,500);
+      else setOrbMode('idle');
+    } else {
+      setOrbMode('idle');
     }
   };
 
   r.onend=()=>{
     clearTimeout(silenceTimer);
     listening=false;
-    // Modo ditado: reinicia gravação SEMPRE (exceto quando está pensando/falando — o speak() cuida disso)
+    if(sent) return; // já enviou, não faz nada
     if(listenMode==='dictate'){
-      if(!isThinking && orbMode!=='speaking'){
-        setTimeout(startListening, 200);
-      }
-      return;
+      // Modo ditado reinicia sempre até receber trigger
+      if(orbMode!=='speaking'&&orbMode!=='thinking') setTimeout(startListening,300);
+    } else if(continuousMode){
+      if(orbMode!=='speaking'&&orbMode!=='thinking') setTimeout(startListening,500);
+    } else {
+      setOrbMode('idle');
     }
-    if(!isThinking) setOrbMode('idle');
   };
 
   return r;
 }
 
 function startListening(){
-  // Não inicia se já está ouvindo ou se ainda está FALANDO (speaking)
-  // isThinking sozinho não bloqueia — o onDone do speak já reseta antes de chamar startListening
   if(listening) return;
-  if(orbMode==='speaking') return; // aguarda terminar de falar
+  if(orbMode==='speaking'||orbMode==='thinking') return;
   rec=buildRec();
-  if(!rec)return;
-  try{ rec.start(); }catch(e){ console.warn('rec.start error:',e); }
+  if(!rec) return;
+  try{ rec.start(); }catch(e){ console.warn(e); }
+}
+
+function stopListening(){
+  if(!listening) return;
+  try{ rec&&rec.stop(); }catch(e){}
+  listening=false;
+  setOrbMode('idle');
 }
 
 function toggleVoice(){
+  // Para fala se estiver falando
   if(ttsBusy){
     ttsBusy=false;
     clearTimeout(ttsTimer);
     window.speechSynthesis.cancel();
     setOrbMode('idle');
-    if(continuousMode||listenMode==='dictate') setTimeout(startListening,400);
+    if(continuousMode||listenMode==='dictate') setTimeout(startListening,300);
     return;
   }
-  if(listening){ rec&&rec.stop(); return; }
+  // Para escuta se estiver ouvindo
+  if(listening){
+    stopListening();
+    return;
+  }
+  // Inicia escuta
   startListening();
 }
 
