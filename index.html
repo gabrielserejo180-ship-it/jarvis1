@@ -815,9 +815,6 @@ function speak(text){
   window.speechSynthesis.cancel();
   ttsBusy=true;
 
-  // Safety: reseta ttsBusy após 25s no máximo
-  const _safety=setTimeout(()=>{ if(ttsBusy) spokenDone(); }, 25000);
-
   const clean=text
     .replace(/[*_#`]/g,'')
     .replace(/[\u{1F000}-\u{1FFFF}]/gu,'')
@@ -825,67 +822,89 @@ function speak(text){
     .replace(/\n+/g,' ')
     .trim();
 
-  if(!clean){ clearTimeout(_safety); spokenDone(); return; }
+  if(!clean){ spokenDone(); return; }
 
-  // Divide em frases curtas
-  const sentences=(clean.match(/[^.!?,;]+[.!?,;]+/g)||[clean])
-    .map(s=>s.trim()).filter(s=>s.length>1);
+  // Divide em frases curtas (máx 80 chars cada)
+  const raw = clean.match(/[^.!?,;]+[.!?,;]*/g) || [clean];
+  const sentences = [];
+  raw.forEach(s=>{
+    s = s.trim();
+    if(!s) return;
+    // Se frase ainda for longa, divide por espaço a cada 80 chars
+    while(s.length > 80){
+      const cut = s.lastIndexOf(' ', 80);
+      if(cut < 20){ sentences.push(s.slice(0,80)); s=s.slice(80).trim(); }
+      else { sentences.push(s.slice(0,cut)); s=s.slice(cut).trim(); }
+    }
+    if(s) sentences.push(s);
+  });
+
+  if(sentences.length===0){ spokenDone(); return; }
 
   setOrbMode('speaking');
   animateSpeakWave();
 
-  let i=0;
-  // Calcula duração estimada de cada frase (chars * 60ms ≈ tempo de fala)
-  function nextSentence(){
-    if(!ttsBusy){ return; }
-    if(i>=sentences.length){ spokenDone(); return; }
+  let idx=0;
 
-    const sentence=sentences[i++];
-    const u=new SpeechSynthesisUtterance(sentence);
+  function sayNext(){
+    if(!ttsBusy){ return; }
+    if(idx >= sentences.length){ spokenDone(); return; }
+
+    const sentence = sentences[idx++];
+    if(!sentence.trim()){ sayNext(); return; }
+
+    // Cancela qualquer fala anterior
+    window.speechSynthesis.cancel();
+
+    const u = new SpeechSynthesisUtterance(sentence.trim());
     u.lang='pt-BR';
-    u.rate=1.05;
-    u.pitch=0.82;
+    u.rate=1.0;
+    u.pitch=0.85;
     u.volume=1;
-    const v=getVoice();
+
+    const vs = window.speechSynthesis.getVoices();
+    const v = vs.find(v=>v.lang==='pt-BR' && !/female|luciana|vitoria/i.test(v.name))
+             || vs.find(v=>v.lang==='pt-BR')
+             || vs.find(v=>v.lang.startsWith('pt'));
     if(v) u.voice=v;
 
-    // Duração estimada: ~60ms por caractere à rate 1.05
-    const estimatedMs=Math.max(800, sentence.length*60);
+    // Duração estimada: ~65ms por char
+    const delay = Math.max(1200, sentence.length * 65);
 
-    let called=false;
+    let advanced = false;
     function advance(){
-      if(called) return;
-      called=true;
+      if(advanced) return;
+      advanced = true;
       clearTimeout(ttsTimer);
-      // Pequena pausa entre frases (natural)
-      ttsTimer=setTimeout(nextSentence, 80);
+      ttsTimer = setTimeout(sayNext, 120); // pausa entre frases
     }
 
-    u.onend=advance;
-    u.onerror=(e)=>{
+    u.onend = advance;
+    u.onerror = (e)=>{
       if(e.error==='canceled'||e.error==='interrupted') return;
       advance();
     };
 
     window.speechSynthesis.speak(u);
 
-    // Fallback timer: se onend não disparar no tempo estimado + 500ms, força avançar
-    ttsTimer=setTimeout(()=>{
-      if(!called){
-        called=true;
-        // Tenta resume caso tenha pausado
+    // Timer de segurança baseado no tamanho da frase
+    ttsTimer = setTimeout(()=>{
+      if(!advanced){
+        // Força resume se pausou
         if(window.speechSynthesis.paused) window.speechSynthesis.resume();
-        // Agenda próxima frase
-        setTimeout(nextSentence,100);
+        // Aguarda mais um pouco antes de avançar
+        setTimeout(advance, 400);
       }
-    }, estimatedMs+500);
+    }, delay);
   }
 
-  // Aguarda vozes carregarem no Android
-  if(window.speechSynthesis.getVoices().length===0){
-    window.speechSynthesis.onvoiceschanged=()=>{ nextSentence(); };
+  // Safety global: máx 60s de fala
+  const _safety = setTimeout(()=>{ if(ttsBusy) spokenDone(); }, 60000);
+
+  if(window.speechSynthesis.getVoices().length === 0){
+    window.speechSynthesis.onvoiceschanged = ()=> sayNext();
   } else {
-    nextSentence();
+    sayNext();
   }
 }
 
