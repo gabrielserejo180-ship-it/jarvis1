@@ -764,33 +764,34 @@ async function sendToJarvis(text){
 }
 
 // ══════════════════════════════════════════
-//  TTS — robusto para Android Chrome
+//  TTS — speechSynthesis nativo, anti-travamento Android
 // ══════════════════════════════════════════
-let ttsWatchdog=null;
-let ttsCurrentText='';
-let ttsOnDoneCallback=null;
-
-function getVoice(){
-  const vs=window.speechSynthesis.getVoices();
-  return vs.find(v=>v.lang==='pt-BR'&&/daniel|ricardo|antonio|masc|male/i.test(v.name))
-        ||vs.find(v=>v.lang==='pt-BR'&&!/female|luciana|vitoria/i.test(v.name))
-        ||vs.find(v=>v.lang==='pt-BR')
-        ||vs.find(v=>v.lang.startsWith('pt'))
-        ||null;
-}
+let ttsBusy=false;
+let ttsTimer=null;
 
 function spokenDone(){
-  clearInterval(ttsWatchdog);
+  ttsBusy=false;
+  clearTimeout(ttsTimer);
+  window.speechSynthesis.cancel();
   setOrbMode('idle');
   isThinking=false;
   if(listenMode==='dictate') setTimeout(()=>startListening(),700);
   else if(continuousMode)    setTimeout(()=>startListening(),600);
 }
 
+function getVoice(){
+  const vs=window.speechSynthesis.getVoices();
+  return vs.find(v=>v.lang==='pt-BR'&&!/female|luciana|vitoria/i.test(v.name))
+        ||vs.find(v=>v.lang==='pt-BR')
+        ||vs.find(v=>v.lang.startsWith('pt'))
+        ||null;
+}
+
 function speak(text){
   if(!window.speechSynthesis) return;
+  clearTimeout(ttsTimer);
   window.speechSynthesis.cancel();
-  clearInterval(ttsWatchdog);
+  ttsBusy=true;
 
   const clean=text
     .replace(/[*_#`]/g,'')
@@ -801,73 +802,65 @@ function speak(text){
 
   if(!clean){ spokenDone(); return; }
 
-  ttsCurrentText=clean;
+  // Divide em frases curtas
+  const sentences=(clean.match(/[^.!?,;]+[.!?,;]+/g)||[clean])
+    .map(s=>s.trim()).filter(s=>s.length>1);
+
   setOrbMode('speaking');
   animateSpeakWave();
 
-  function doSpeak(txt){
-    window.speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance(txt);
+  let i=0;
+  // Calcula duração estimada de cada frase (chars * 60ms ≈ tempo de fala)
+  function nextSentence(){
+    if(!ttsBusy){ return; }
+    if(i>=sentences.length){ spokenDone(); return; }
+
+    const sentence=sentences[i++];
+    const u=new SpeechSynthesisUtterance(sentence);
     u.lang='pt-BR';
     u.rate=1.05;
     u.pitch=0.82;
     u.volume=1;
-
-    // Aguarda vozes carregarem (necessário no Android)
     const v=getVoice();
     if(v) u.voice=v;
 
-    let finished=false;
+    // Duração estimada: ~60ms por caractere à rate 1.05
+    const estimatedMs=Math.max(800, sentence.length*60);
 
-    u.onend=()=>{
-      if(finished) return;
-      finished=true;
-      clearInterval(ttsWatchdog);
-      spokenDone();
-    };
+    let called=false;
+    function advance(){
+      if(called) return;
+      called=true;
+      clearTimeout(ttsTimer);
+      // Pequena pausa entre frases (natural)
+      ttsTimer=setTimeout(nextSentence, 80);
+    }
 
+    u.onend=advance;
     u.onerror=(e)=>{
-      if(finished) return;
-      // Ignora erros de cancelamento — são esperados
       if(e.error==='canceled'||e.error==='interrupted') return;
-      finished=true;
-      clearInterval(ttsWatchdog);
-      spokenDone();
+      advance();
     };
 
     window.speechSynthesis.speak(u);
 
-    // Watchdog: Android às vezes para sem disparar onend
-    // Checa a cada 500ms se ainda está falando
-    let lastPos=0;
-    let stuckCount=0;
-    clearInterval(ttsWatchdog);
-    ttsWatchdog=setInterval(()=>{
-      if(finished) { clearInterval(ttsWatchdog); return; }
-      if(!window.speechSynthesis.speaking && !window.speechSynthesis.pending){
-        stuckCount++;
-        if(stuckCount>=3){
-          // Parou sem disparar onend — força conclusão
-          clearInterval(ttsWatchdog);
-          finished=true;
-          spokenDone();
-        }
-      } else {
-        stuckCount=0;
-        // Keep-alive: Android cancela após ~15s de inatividade de tela
-        // Resume suave para manter ativo
-        if(window.speechSynthesis.paused){
-          window.speechSynthesis.resume();
-        }
+    // Fallback timer: se onend não disparar no tempo estimado + 500ms, força avançar
+    ttsTimer=setTimeout(()=>{
+      if(!called){
+        called=true;
+        // Tenta resume caso tenha pausado
+        if(window.speechSynthesis.paused) window.speechSynthesis.resume();
+        // Agenda próxima frase
+        setTimeout(nextSentence,100);
       }
-    },500);
+    }, estimatedMs+500);
   }
 
-  // Se vozes ainda não carregaram, aguarda
+  // Aguarda vozes carregarem no Android
   if(window.speechSynthesis.getVoices().length===0){
-    window.speechSynthesis.onvoiceschanged=()=>doSpeak(clean);
+    window.speechSynthesis.onvoiceschanged=()=>{ nextSentence(); };
   } else {
-    doSpeak(clean);
+    nextSentence();
   }
 }
 
@@ -999,9 +992,12 @@ function startListening(){
 }
 
 function toggleVoice(){
-  if(window.speechSynthesis&&window.speechSynthesis.speaking){
-    window.speechSynthesis.cancel(); setOrbMode('idle');
-    if(continuousMode) setTimeout(startListening,400);
+  if(ttsBusy){
+    ttsBusy=false;
+    clearTimeout(ttsTimer);
+    window.speechSynthesis.cancel();
+    setOrbMode('idle');
+    if(continuousMode||listenMode==='dictate') setTimeout(startListening,400);
     return;
   }
   if(listening){ rec&&rec.stop(); return; }
