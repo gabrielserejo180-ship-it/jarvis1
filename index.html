@@ -726,22 +726,40 @@ async function sendToJarvis(text){
     }
 
     history.push({role:'assistant',content:clean});
+    // isThinking vira false DENTRO do speak→onDone para sincronizar com fim da fala
     speak(clean);
 
   }catch(err){
     isThinking=false;
     setOrbMode('idle');
+    // Em caso de erro, reinicia escuta se estava em modo ativo
+    if(listenMode==='dictate'||continuousMode) setTimeout(startListening,800);
     speak('Sistemas temporariamente offline, senhor.');
   }
-  isThinking=false;
+  // NÃO reseta isThinking aqui — speak→onDone cuida disso
 }
 
 // ══════════════════════════════════════════
 //  TTS — frase a frase, sem travar
 // ══════════════════════════════════════════
+// Keep-alive do speechSynthesis no Android (evita pausa automática a cada 15s)
+let ttsKeepAlive=null;
+function startTTSKeepAlive(){
+  clearInterval(ttsKeepAlive);
+  ttsKeepAlive=setInterval(()=>{
+    if(window.speechSynthesis.speaking){
+      window.speechSynthesis.pause();
+      window.speechSynthesis.resume();
+    } else {
+      clearInterval(ttsKeepAlive);
+    }
+  },8000);
+}
+
 function speak(text){
   if(!window.speechSynthesis)return;
   window.speechSynthesis.cancel();
+  clearInterval(ttsKeepAlive);
 
   const clean=text
     .replace(/[*_#`]/g,'')
@@ -749,47 +767,67 @@ function speak(text){
     .replace(/LEARNED_JSON:\[.*?\]/gs,'')
     .trim();
 
+  if(!clean) { onDone(); return; }
+
+  // Divide em frases — ponto, exclamação, interrogação, ou vírgula longa
   const sentences=clean.match(/[^.!?]+[.!?]+/g)||[clean];
   let idx=0;
+  let done=false;
 
   setOrbMode('speaking');
   animateSpeakWave();
+  startTTSKeepAlive();
 
-  function next(){
-    if(idx>=sentences.length){
-      onDone(); return;
-    }
-    const u=new SpeechSynthesisUtterance(sentences[idx].trim());
-    u.lang='pt-BR'; u.rate=1.08; u.pitch=0.82; u.volume=1;
+  function speakSentence(){
+    if(done) return;
+    if(idx>=sentences.length){ onDone(); return; }
+
+    const sentence=sentences[idx].trim();
+    idx++; // incrementa ANTES de criar a utterance — sem duplo
+
+    if(!sentence){ speakSentence(); return; }
+
+    const u=new SpeechSynthesisUtterance(sentence);
+    u.lang='pt-BR';
+    u.rate=1.08;
+    u.pitch=0.82;
+    u.volume=1;
 
     const vs=window.speechSynthesis.getVoices();
     const v=vs.find(v=>v.lang==='pt-BR'&&/daniel|ricardo|antonio|masc|male/i.test(v.name))
             ||vs.find(v=>v.lang==='pt-BR'&&!/female|luciana|vitoria/i.test(v.name))
             ||vs.find(v=>v.lang==='pt-BR')
             ||vs.find(v=>v.lang.startsWith('pt'));
-    if(v)u.voice=v;
+    if(v) u.voice=v;
 
-    u.onend=()=>{ idx++; next(); };
-    u.onerror=()=>{ idx++; next(); };
+    u.onend=()=>{ speakSentence(); };
+    u.onerror=()=>{ speakSentence(); }; // pula frase com erro, não trava
+
     window.speechSynthesis.speak(u);
-    idx++;
   }
 
   function onDone(){
+    if(done) return;
+    done=true;
+    clearInterval(ttsKeepAlive);
     setOrbMode('idle');
-    // Modo ditado: volta a gravar automaticamente após responder
-    if(listenMode==='dictate'&&!isThinking){
+    isThinking=false; // ── BUG FIX: garante reset aqui também
+    // Modo ditado: volta a gravar
+    if(listenMode==='dictate'){
       setTimeout(()=>startListening(),700);
     }
-    // Modo contínuo normal
-    else if(continuousMode&&!isThinking){
+    // Modo contínuo
+    else if(continuousMode){
       setTimeout(()=>startListening(),600);
     }
   }
 
+  // Aguarda vozes se necessário
   if(window.speechSynthesis.getVoices().length===0){
-    window.speechSynthesis.onvoiceschanged=()=>next();
-  } else { next(); }
+    window.speechSynthesis.onvoiceschanged=()=>speakSentence();
+  } else {
+    speakSentence();
+  }
 }
 
 // ══════════════════════════════════════════
@@ -910,10 +948,13 @@ function buildRec(){
 }
 
 function startListening(){
-  if(listening||isThinking)return;
+  // Não inicia se já está ouvindo ou se ainda está FALANDO (speaking)
+  // isThinking sozinho não bloqueia — o onDone do speak já reseta antes de chamar startListening
+  if(listening) return;
+  if(orbMode==='speaking') return; // aguarda terminar de falar
   rec=buildRec();
   if(!rec)return;
-  try{ rec.start(); }catch(e){}
+  try{ rec.start(); }catch(e){ console.warn('rec.start error:',e); }
 }
 
 function toggleVoice(){
