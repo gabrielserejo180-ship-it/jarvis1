@@ -393,6 +393,12 @@
     <div id="sst" class="loading">OFFLINE</div>
   </div>
 
+  <!-- DEBUG PANEL -->
+  <div id="debug-panel" style="background:rgba(255,50,0,0.15);border:1px solid rgba(255,100,0,0.4);border-radius:3px;padding:4px 10px;font-size:0.48rem;color:#ff8844;letter-spacing:0.05em;display:none;word-break:break-all;">
+    <span id="debug-text">—</span>
+    <button onclick="document.getElementById('debug-panel').style.display='none'" style="float:right;background:none;border:none;color:#ff8844;cursor:pointer;font-size:0.7rem;">✕</button>
+  </div>
+
   <!-- MEMÓRIA -->
   <div class="membar">
     <span class="memlabel">◈ MEM:</span>
@@ -584,6 +590,19 @@ function animateSpeakWave(){
 }
 
 // ══════════════════════════════════════════
+//  DEBUG
+// ══════════════════════════════════════════
+function dbg(msg){
+  const p=document.getElementById('debug-panel');
+  const t=document.getElementById('debug-text');
+  if(p&&t){
+    p.style.display='block';
+    t.textContent=new Date().toLocaleTimeString()+' → '+msg;
+    console.log('[JARVIS DEBUG]',msg);
+  }
+}
+
+// ══════════════════════════════════════════
 //  ESTADO
 // ══════════════════════════════════════════
 let memory=[],history=[],isThinking=false,continuousMode=false;
@@ -712,8 +731,9 @@ async function sendToJarvis(text){
   if(!text) return;
   if(isThinking) return; // já processando
   isThinking=true;
-  ttsBusy=false; // garante reset
+  ttsBusy=false;
   setOrbMode('thinking');
+  dbg('Enviando: '+text.slice(0,40));
 
   // Adiciona data/hora na mensagem do usuário — garante que o modelo veja
   const _agora=new Date();
@@ -741,29 +761,31 @@ async function sendToJarvis(text){
   while(tentativa<2 && !raw){
     tentativa++;
     try{
+      dbg('Worker chamado (tentativa '+tentativa+')...');
       const res=await fetch(WORKER_URL,{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({system:buildPrompt(),messages:messagesWithCtx}),
-        signal: AbortSignal.timeout(25000) // timeout de 25s
+        signal: AbortSignal.timeout(25000)
       });
 
+      dbg('Worker status: '+res.status);
       if(!res.ok){
-        console.warn(`Worker HTTP ${res.status} — tentativa ${tentativa}`);
+        dbg('ERRO HTTP '+res.status);
         if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
         continue;
       }
 
       const data=await res.json();
       raw=(data.content||[]).map(b=>b.text||'').join('').trim();
+      dbg('Resposta recebida: '+(raw?raw.slice(0,50):'VAZIA'));
 
       if(!raw){
-        console.warn('Resposta vazia — tentativa '+tentativa);
         if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
       }
 
     }catch(err){
-      console.warn('Fetch erro tentativa '+tentativa+':', err.message);
+      dbg('FETCH ERRO: '+err.message);
       if(tentativa<2) await new Promise(r=>setTimeout(r,1500));
     }
   }
